@@ -7,6 +7,7 @@ RUN_DIR=/run/nvidia
 PID_FILE=${RUN_DIR}/${0##*/}.pid
 DRIVER_VERSION=${DRIVER_VERSION:?"Missing driver version"}
 KERNEL_UPDATE_HOOK=/run/kernel/postinst.d/update-nvidia-driver
+NUM_VGPU_DEVICES=0
 
 _update_package_cache() {
     if [ "${PACKAGE_TAG:-}" != "builtin" ]; then
@@ -53,12 +54,12 @@ _install_prerequisites() (
     echo "Enabling RHOCP and EUS RPM repos..."
     dnf config-manager --set-enabled rhocp-${OPENSHIFT_VERSION}-for-rhel-8-x86_64-rpms || true
     if ! dnf makecache --releasever=${RHEL_VERSION}; then
-        dnf config-manager --set-disabled rhocp-${OPENSHIFT_VERSION}-for-rhel-8-x86_64-rpms
+    	dnf config-manager --set-disabled rhocp-${OPENSHIFT_VERSION}-for-rhel-8-x86_64-rpms
     fi
 
     dnf config-manager --set-enabled rhel-8-for-x86_64-baseos-eus-rpms  || true
     if ! dnf makecache --releasever=${RHEL_VERSION}; then
-        dnf config-manager --set-disabled rhel-8-for-x86_64-baseos-eus-rpms
+    	dnf config-manager --set-disabled rhel-8-for-x86_64-baseos-eus-rpms
     fi
 
     echo "Installing Linux kernel headers..."
@@ -68,7 +69,7 @@ _install_prerequisites() (
     echo "Installing Linux kernel module files..."
     dnf -q -y --releasever=${RHEL_VERSION} install kernel-core-${KERNEL_VERSION} > /dev/null
 
-    # Prevent depmod from giving a WARNING about missing files
+    # Prevent depmod from giving a WARNING about missing files 
     touch /lib/modules/${KERNEL_VERSION}/modules.order
     touch /lib/modules/${KERNEL_VERSION}/modules.builtin
 
@@ -183,6 +184,20 @@ _load_driver() {
 
     echo "Starting NVIDIA persistence daemon..."
     nvidia-persistenced --persistence-mode
+
+    if [ "${DRIVER_TYPE}" = "vgpu" ]; then
+        if [ "${VGPU_LICENSE_SERVER_TYPE}" = "FNE" ]; then
+            echo "Copying gridd.conf..."
+            cp /drivers/gridd.conf /etc/nvidia/gridd.conf
+        elif [ "${VGPU_LICENSE_SERVER_TYPE}" = "NLS" ]; then
+            echo "Copying MessengerToken..."
+            mkdir -p  /etc/nvidia/MessengerToken/
+            cp /drivers/MessengerToken/* /etc/nvidia/MessengerToken/
+        fi
+
+        echo "Starting nvidia-gridd.."
+        LD_LIBRARY_PATH=/usr/lib64/nvidia/gridd nvidia-gridd
+    fi
 }
 
 # Stop persistenced and unload the kernel modules if they are currently loaded.
@@ -204,6 +219,21 @@ _unload_driver() {
         done
         if [ $i -eq 10 ]; then
             echo "Could not stop NVIDIA persistence daemon" >&2
+            return 1
+        fi
+    fi
+
+    if [ -f /var/run/nvidia-gridd/nvidia-gridd.pid ]; then
+        echo "Stopping NVIDIA grid daemon..."
+        local pid=$(< /var/run/nvidia-gridd/nvidia-gridd.pid)
+
+        kill -SIGTERM "${pid}"
+        for i in $(seq 1 10); do
+            kill -0 "${pid}" 2> /dev/null || break
+            sleep 0.1
+        done
+        if [ $i -eq 10 ]; then
+            echo "Could not stop NVIDIA Grid daemon" >&2
             return 1
         fi
     fi
@@ -302,7 +332,51 @@ _shutdown() {
     return 1
 }
 
+_find_vgpu_driver_version() {
+    local count=""
+    local version=""
+
+    if [ "${DISABLE_VGPU_VERSION_CHECK}" = "true" ]; then
+        echo "vgpu version compatibility check is disabled"
+        return 0
+    fi
+    # check if vgpu devices are present
+    count=$(vgpu-util count)
+    if [ $? -ne 0 ]; then
+         echo "cannot find vgpu devices on host, pleae check /var/log/vgpu-util.log for more details..."
+         return 0
+    fi
+    NUM_VGPU_DEVICES=$(echo "$count" | awk -F= '{print $2}')
+    if [ $NUM_VGPU_DEVICES -eq 0 ]; then
+        # no vgpu devices found, treat as passthrough
+        return 0
+    fi
+    echo "found $NUM_VGPU_DEVICES vgpu devices on host"
+
+    # find compatible guest driver using drive catalog
+    version=$(vgpu-util match -i /drivers -c /drivers/vgpuDriverCatalog.yaml)
+    if [ $? -ne 0 ]; then
+        echo "cannot find match for compatible vgpu driver from available list, please check /var/log/vgpu-util.log for more details..."
+        return 1
+    fi
+    DRIVER_VERSION=$(echo "$version" | awk -F= '{print $2}')
+    echo "vgpu driver version selected: ${DRIVER_VERSION}"
+    return 0
+}
+
 init() {
+    if [ "${DRIVER_TYPE}" = "vgpu" ]; then
+        _find_vgpu_driver_version || exit 1
+    fi
+
+    # Install the userspace components and copy the kernel module sources.
+    sh NVIDIA-Linux-$DRIVER_ARCH-$DRIVER_VERSION.run -x && \
+        cd NVIDIA-Linux-$DRIVER_ARCH-$DRIVER_VERSION && \
+        sh /tmp/install.sh nvinstall && \
+        mkdir -p /usr/src/nvidia-$DRIVER_VERSION && \
+        mv LICENSE mkprecompiled kernel /usr/src/nvidia-$DRIVER_VERSION && \
+        sed '9,${/^\(kernel\|LICENSE\)/!d}' .manifest > /usr/src/nvidia-$DRIVER_VERSION/.manifest
+
     echo -e "\n========== NVIDIA Software Installer ==========\n"
     echo -e "Starting installation of NVIDIA driver version ${DRIVER_VERSION} for Linux kernel version ${KERNEL_VERSION}\n"
 
@@ -324,7 +398,7 @@ init() {
         _update_package_cache
         _install_prerequisites
         _create_driver_package
-        _remove_prerequisites
+        #_remove_prerequisites
         _cleanup_package_cache
     fi
 
@@ -354,6 +428,20 @@ update() {
         exec 4>&-
     fi
     exec 3>&-
+
+    # vgpu driver version is choosen dynamically during runtime, so pre-compile modules for
+    # only non-vgpu driver types
+    if [ "${DRIVER_TYPE}" != "vgpu" ]; then
+        # Install the userspace components and copy the kernel module sources.
+        if [ ! -e /usr/src/nvidia-${DRIVER_VERSION}/mkprecompiled ]; then
+            sh NVIDIA-Linux-$DRIVER_ARCH-$DRIVER_VERSION.run -x && \
+                cd NVIDIA-Linux-$DRIVER_ARCH-$DRIVER_VERSION && \
+                sh /tmp/install.sh nvinstall && \
+                mkdir -p /usr/src/nvidia-$DRIVER_VERSION && \
+                mv LICENSE mkprecompiled kernel /usr/src/nvidia-$DRIVER_VERSION && \
+                sed '9,${/^\(kernel\|LICENSE\)/!d}' .manifest > /usr/src/nvidia-$DRIVER_VERSION/.manifest
+        fi
+    fi
 
     echo -e "\n========== NVIDIA Software Updater ==========\n"
     echo -e "Starting update of NVIDIA driver version ${DRIVER_VERSION} for Linux kernel version ${KERNEL_VERSION}\n"
