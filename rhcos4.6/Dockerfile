@@ -19,7 +19,7 @@ RUN git clone https://gitlab.com/nvidia/container-images/driver && \
     go build -o vgpu-util && \
     mv vgpu-util /work
 
-FROM registry.access.redhat.com/ubi8:latest
+FROM registry.access.redhat.com/ubi8:8.2
 
 #ARG BASE_URL=http://us.download.nvidia.com/XFree86/Linux-x86_64
 ARG BASE_URL=https://us.download.nvidia.com/tesla
