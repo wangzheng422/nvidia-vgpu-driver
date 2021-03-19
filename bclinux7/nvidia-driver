@@ -53,6 +53,8 @@ _install_prerequisites() (
 
     echo "Installing Linux kernel module files..."
     curl -fsSL $(repoquery --location kernel-bek-${KERNEL_VERSION}) | rpm2cpio | cpio -idm --quiet
+    curl -fsSL $(repoquery --location kernel-bek-core-${KERNEL_VERSION}) | rpm2cpio | cpio -idm --quiet
+    curl -fsSL $(repoquery --location kernel-bek-modules-${KERNEL_VERSION}) | rpm2cpio | cpio -idm --quiet
     mv lib/modules/${KERNEL_VERSION}/modules.* /lib/modules/${KERNEL_VERSION}
     mv lib/modules/${KERNEL_VERSION}/kernel /lib/modules/${KERNEL_VERSION}
     depmod ${KERNEL_VERSION}
