@@ -130,17 +130,17 @@ _create_driver_package() (
     ../mkprecompiled --pack ${pkg_name} --description ${KERNEL_VERSION}                              \
                                         --proc-mount-point /lib/modules/${KERNEL_VERSION}/proc       \
                                         --driver-version ${DRIVER_VERSION}                           \
-                                        --kernel-bek-interface nv-linux.o                                \
+                                        --kernel-interface nv-linux.o                                \
                                         --linked-module-name nvidia.ko                               \
                                         --core-object-name nvidia/nv-kernel.o_binary                 \
                                         ${nvidia_sign_args}                                          \
                                         --target-directory .                                         \
-                                        --kernel-bek-interface nv-modeset-linux.o                        \
+                                        --kernel-interface nv-modeset-linux.o                        \
                                         --linked-module-name nvidia-modeset.ko                       \
                                         --core-object-name nvidia-modeset/nv-modeset-kernel.o_binary \
                                         ${nvidia_modeset_sign_args}                                  \
                                         --target-directory .                                         \
-                                        --kernel-bek-module nvidia-uvm.ko                                \
+                                        --kernel-module nvidia-uvm.ko                                \
                                         ${nvidia_uvm_sign_args}                                      \
                                         --target-directory .
     mkdir -p precompiled
@@ -219,11 +219,11 @@ _install_driver() {
     if [ "${ACCEPT_LICENSE}" = "yes" ]; then
         install_args+=("--accept-license")
     fi
-    nvidia-installer --kernel-bek-module-only --no-drm --ui=none --no-nouveau-check ${install_args[@]+"${install_args[@]}"}
+    nvidia-installer --kernel-module-only --no-drm --ui=none --no-nouveau-check ${install_args[@]+"${install_args[@]}"}
     # May need to add no-cc-check for Rhel, otherwise it complains about cc missing in path
     # /proc/version and lib/modules/KERNEL_VERSION/proc are different, by default installer looks at /proc/ so, added the proc-mount-point
     # TODO: remove the -a flag. its not needed. in the new driver version, license-acceptance is implicit
-    #nvidia-installer --kernel-bek-module-only --no-drm --ui=none --no-nouveau-check --no-cc-version-check --proc-mount-point /lib/modules/${KERNEL_VERSION}/proc ${install_args[@]+"${install_args[@]}"}
+    #nvidia-installer --kernel-module-only --no-drm --ui=none --no-nouveau-check --no-cc-version-check --proc-mount-point /lib/modules/${KERNEL_VERSION}/proc ${install_args[@]+"${install_args[@]}"}
 }
 
 # Mount the driver rootfs into the run directory with the exception of sysfs.
